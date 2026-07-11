@@ -117,14 +117,14 @@ if command -v micpipe &>/dev/null; then
     fi
   fi
 
-  if micpipe status 2>/dev/null | grep -qi "running"; then
+  if micpipe status 2>/dev/null | grep -q "^running ("; then
     pass "micpipe service is running"
   else
     warn "micpipe service is not running"
     read -rp "Run 'micpipe install' to start it now? [Y/n] " answer
     if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
       micpipe install
-      if micpipe status 2>/dev/null | grep -qi "running"; then
+      if micpipe status 2>/dev/null | grep -q "^running ("; then
         pass "micpipe service is running"
       else
         fail "micpipe service still not running. If BlackHole was just installed, try: micpipe restart"
@@ -261,6 +261,7 @@ else
   read -rp "Speak a test joke through the '${tts_backend}' backend now? [Y/n] " answer
   if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
     test_state_dir="$(mktemp -d "${TMPDIR:-/tmp}/dad-joke-setup.XXXXXX")"
+    trap 'rm -rf "$test_state_dir"' EXIT
     printf '%s' "Setup Test" >"${test_state_dir}/my-room"
     {
       printf '%s\n' "setup-test-token"

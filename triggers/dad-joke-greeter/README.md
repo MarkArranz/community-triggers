@@ -149,8 +149,10 @@ chmod 600 ~/.tuple/triggers/dad-joke-greeter/config.env
 Store the ElevenLabs API key in the macOS Keychain:
 
 ```bash
-security add-generic-password -a "$USER" -s elevenlabs-api-key -w "$ELEVENLABS_API_KEY" -U
+security add-generic-password -U -a "$USER" -s elevenlabs-api-key -w
 ```
+
+The `-w` at the end makes `security` prompt for the key so it never lands in your shell history.
 
 If `DAD_JOKE_TTS_BACKEND=elevenlabs` is set and the API key is missing or the API request fails, the trigger logs the error and falls back to `say`. Diagnostics land in `.state/debounced-worker.log` and `.state/say-errors.log` next to the trigger scripts. After configuring a backend, re-run `bash setup.sh` — it checks ffmpeg and offers a spoken test through the configured backend.
 
