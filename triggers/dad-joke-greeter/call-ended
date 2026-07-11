@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Tuple call-ended trigger. Delegates to the shared shell runtime.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "${here}/run-trigger.sh" call-ended "$@"

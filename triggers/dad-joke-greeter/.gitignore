@@ -1,0 +1,9 @@
+# Personal runtime configuration — never commit (may reference private voice/keychain settings)
+config.env
+
+# Personal, user-created room filter — never commit (see README "Limiting to specific rooms")
+tracked-rooms.txt
+
+# Local runtime state
+.state/
+.disabled
