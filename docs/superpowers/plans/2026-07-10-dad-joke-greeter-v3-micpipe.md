@@ -893,10 +893,10 @@ Expected: EXACTLY these six lines (order may vary; the parenthetical reasons are
 - [ ] **Step 4: Repo CI validator (structural)**
 
 ```bash
-cd util && pnpm install && node -e 'require("./validate-triggers.js")({core:{setFailed:(m)=>{console.error(m);process.exitCode=1}}})' && cd ..
+cd util && pnpm install && cd .. && node -e 'require("./util/validate-triggers.js")({core:{setFailed:(m)=>{console.error(m);process.exitCode=1}}})'
 ```
 
-Expected: exit 0, no `setFailed` output. (If the module's export shape differs, inspect `util/validate-triggers.js` and adapt the harness object — the CI entry is `util/pull-request-validator.js` via actions/github-script.)
+Expected: `All triggers passed validation`, exit 0. (`extractTriggers()` reads `triggers/` relative to `process.cwd()`, so node must run from the repo root — matching real CI's cwd. The CI entry is `util/pull-request-validator.js` via actions/github-script.)
 
 - [ ] **Step 5: setup.sh — micpipe branch, live** (interactive; already done once in Task 3 Step 3 — rerun if anything changed since)
 
