@@ -354,14 +354,14 @@ if command -v micpipe &>/dev/null; then
     fi
   fi
 
-  if micpipe status 2>/dev/null | grep -qi "running"; then
+  if micpipe status 2>/dev/null | grep -q "^running ("; then
     pass "micpipe service is running"
   else
     warn "micpipe service is not running"
     read -rp "Run 'micpipe install' to start it now? [Y/n] " answer
     if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
       micpipe install
-      if micpipe status 2>/dev/null | grep -qi "running"; then
+      if micpipe status 2>/dev/null | grep -q "^running ("; then
         pass "micpipe service is running"
       else
         fail "micpipe service still not running. If BlackHole was just installed, try: micpipe restart"
@@ -498,6 +498,7 @@ else
   read -rp "Speak a test joke through the '${tts_backend}' backend now? [Y/n] " answer
   if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
     test_state_dir="$(mktemp -d "${TMPDIR:-/tmp}/dad-joke-setup.XXXXXX")"
+    trap 'rm -rf "$test_state_dir"' EXIT
     printf '%s' "Setup Test" >"${test_state_dir}/my-room"
     {
       printf '%s\n' "setup-test-token"
@@ -723,8 +724,10 @@ chmod 600 ~/.tuple/triggers/dad-joke-greeter/config.env
 Store the ElevenLabs API key in the macOS Keychain:
 
 ```bash
-security add-generic-password -a "$USER" -s elevenlabs-api-key -w "$ELEVENLABS_API_KEY" -U
+security add-generic-password -U -a "$USER" -s elevenlabs-api-key -w
 ```
+
+The `-w` at the end makes `security` prompt for the key so it never lands in your shell history.
 
 If `DAD_JOKE_TTS_BACKEND=elevenlabs` is set and the API key is missing or the API request fails, the trigger logs the error and falls back to `say`. Diagnostics land in `.state/debounced-worker.log` and `.state/say-errors.log` next to the trigger scripts. After configuring a backend, re-run `bash setup.sh` — it checks ffmpeg and offers a spoken test through the configured backend.
 
