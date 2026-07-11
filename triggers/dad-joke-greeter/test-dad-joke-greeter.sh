@@ -362,6 +362,36 @@ test_comment_only_tracked_rooms_tracks_all() {
   pass "comment-only tracked rooms file tracks all rooms"
 }
 
+test_missing_api_key_falls_back_to_say() {
+  prepare_worker_joke
+
+  DAD_JOKE_TTS_BACKEND=elevenlabs \
+  run_event worker --room "Example Room" --token "tok"
+
+  assert_not_contains "$CURL_LOG" "text-to-speech"
+  assert_file_not_exists "$AFPLAY_LOG"
+  assert_contains "$SAY_LOG" "Guest User just joined. Here is a dad joke. knock knock"
+  assert_contains "$SAY_LOG" "-a BlackHole 2ch"
+  assert_file_not_exists "${STATE_DIR}/pending-joke"
+  pass "missing ElevenLabs API key falls back to say"
+}
+
+test_config_env_overrides_environment() {
+  prepare_worker_joke
+  cat >"${TRIGGER_DIR}/config.env" <<'EOF'
+DAD_JOKE_TTS_BACKEND=api
+DAD_JOKE_TTS_API_URL=https://tts.example/speak
+EOF
+
+  run_event worker --room "Example Room" --token "tok"
+
+  assert_contains "$CURL_LOG" "https://tts.example/speak"
+  assert_contains "$AFPLAY_LOG" "dad-joke-tts.mp3"
+  assert_file_not_exists "$SAY_LOG"
+  assert_file_not_exists "${STATE_DIR}/pending-joke"
+  pass "config.env values override empty environment variables"
+}
+
 test_self_join_schedules_and_speaks
 test_non_self_join_without_self_room_skips
 test_worker_supersede_and_happy_path
@@ -373,3 +403,5 @@ test_elevenlabs_backend_uses_api_audio_players
 test_custom_api_backend_posts_text_and_plays_audio
 test_api_backend_failure_falls_back_to_say
 test_comment_only_tracked_rooms_tracks_all
+test_missing_api_key_falls_back_to_say
+test_config_env_overrides_environment
