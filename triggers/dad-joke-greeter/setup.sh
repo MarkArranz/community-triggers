@@ -18,6 +18,24 @@ warn() { printf "${YELLOW}  ! %s${RESET}\n" "$1"; }
 step() { printf "\n${BOLD}%s${RESET}\n" "$1"; }
 
 errors=0
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── Configuration ──────────────────────────────────────────────────────
+# Source config.env exactly as run-trigger.sh does, so the checks below see
+# the same configuration the trigger runs with.
+
+config_env_file="${script_dir}/config.env"
+if [[ -f "$config_env_file" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$config_env_file"
+  set +a
+fi
+
+blackhole_device="${BLACKHOLE_DEVICE:-BlackHole 2ch}"
+tts_backend="${DAD_JOKE_TTS_BACKEND:-say}"
+aggregate_device_name="BH + Mic Input"
+micpipe_min_version="0.2.0"
 
 # ── Prerequisites ──────────────────────────────────────────────────────
 
@@ -34,14 +52,13 @@ for cmd in bash curl sleep say; do
 done
 
 # Snapshot the audio device list once; system_profiler is slow (several
-# seconds per call). Re-queried only after the user creates a new device.
+# seconds per call).
 audio_data="$(system_profiler SPAudioDataType 2>/dev/null)"
 
-# BlackHole 2ch
-if grep -q "BlackHole 2ch" <<<"$audio_data"; then
-  pass "BlackHole 2ch installed"
+if grep -q "$blackhole_device" <<<"$audio_data"; then
+  pass "$blackhole_device installed"
 else
-  fail "BlackHole 2ch not found. Install with: brew install blackhole-2ch"
+  fail "$blackhole_device not found. Install with: brew install blackhole-2ch"
   errors=$((errors + 1))
   warn "If you just installed BlackHole, you may need to restart your Mac (or log out"
   warn "and back in) before it appears as an audio device. Then re-run this script."
@@ -53,14 +70,12 @@ if [[ "$errors" -gt 0 ]]; then
 fi
 
 # ── Trigger launchers ──────────────────────────────────────────────────
-# The room-joined/room-left scripts are bash launchers. Make sure they are
-# executable in case the exec bit was lost in transit (e.g. an unzip or a copy
-# across filesystems).
+# The event scripts are bash launchers. Make sure they are executable in case
+# the exec bit was lost in transit (e.g. an unzip or a copy across filesystems).
 
 step "Checking trigger launchers..."
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-for launcher in run-trigger.sh room-joined room-left; do
+for launcher in run-trigger.sh room-joined room-left call-ended; do
   target="$script_dir/$launcher"
   if [[ -f "$target" ]]; then
     chmod +x "$target"
@@ -76,127 +91,139 @@ if [[ "$errors" -gt 0 ]]; then
   exit 1
 fi
 
-# ── Aggregate audio device ─────────────────────────────────────────────
+# ── Audio routing ──────────────────────────────────────────────────────
+# Preferred: micpipe (https://github.com/markarranz/micpipe) streams your mic
+# into BlackHole so Tuple can use BlackHole directly as its input device.
+# Alternative: a hand-built aggregate device (see the README appendix).
 
-step "Checking for aggregate audio device..."
+step "Checking audio routing..."
 
-DEVICE_NAME="BH + Mic Input"
+tuple_input_device=""
 
-if grep -qi "$DEVICE_NAME" <<<"$audio_data"; then
-  pass "\"$DEVICE_NAME\" aggregate device exists"
-else
-  warn "\"$DEVICE_NAME\" not found. Let's create it"
+if command -v micpipe &>/dev/null; then
+  pass "micpipe found ($(command -v micpipe))"
 
-  # List available microphones with channel counts. This trigger needs a MONO
-  # mic: in the aggregate, a 1-channel mic puts BlackHole on channel 2 (which
-  # Tuple transmits), while a stereo mic pushes it to channels 3-4 (which Tuple
-  # ignores). See the README's "Use a mono microphone" note.
-  printf "\n${BOLD}Available microphones${RESET} (this trigger needs a ${GREEN}mono${RESET} mic):\n"
-  mics=()
-  mic_channels=()
-  while IFS=$'\t' read -r mic ch; do
-    # Skip BlackHole, aggregate, and Zoom virtual devices
-    case "$mic" in
-      *BlackHole*|*"$DEVICE_NAME"*|*"Dad Joke Input"*|*ZoomAudio*) continue ;;
-    esac
-    mics+=("$mic")
-    mic_channels+=("$ch")
-    if [[ "$ch" == "1" ]]; then
-      printf "  ${GREEN}%d)${RESET} %s ${GREEN}(mono - recommended)${RESET}\n" "${#mics[@]}" "$mic"
-    else
-      printf "  ${YELLOW}%d)${RESET} %s ${YELLOW}(%s-channel - not supported)${RESET}\n" "${#mics[@]}" "$mic" "$ch"
-    fi
-  done < <(
-    printf '%s\n' "$audio_data" | awk '
-      /^        [^ ].*:$/ { name = $0; gsub(/^ +| +$/, "", name); sub(/:$/, "", name); next }
-      /^          Input Channels:/ { print name "\t" $NF }
-    '
-  )
-
-  if [[ ${#mics[@]} -eq 0 ]]; then
-    fail "No microphones found"
-    errors=$((errors + 1))
+  micpipe_version="$(micpipe --version 2>/dev/null | awk '{print $2}')"
+  if [[ -z "$micpipe_version" ]]; then
+    warn "Could not parse 'micpipe --version'; continuing, but ${micpipe_min_version}+ is expected"
   else
-    printf "\n"
-    mic_choice=""
-    mic_choice_channels=""
-    while [[ -z "$mic_choice" ]]; do
-      read -rp "Select your microphone [1-${#mics[@]}]: " pick
-      if [[ "$pick" =~ ^[0-9]+$ ]] && [[ "$pick" -ge 1 ]] && [[ "$pick" -le ${#mics[@]} ]]; then
-        candidate="${mics[$((pick - 1))]}"
-        read -rp "Use \"$candidate\"? [Y/n] " confirm
-        if [[ -z "$confirm" || "$confirm" =~ ^[Yy] ]]; then
-          mic_choice="$candidate"
-          mic_choice_channels="${mic_channels[$((pick - 1))]}"
-        fi
+    lowest="$(printf '%s\n%s\n' "$micpipe_version" "$micpipe_min_version" | sort -V | head -1)"
+    if [[ "$lowest" != "$micpipe_min_version" ]]; then
+      fail "micpipe ${micpipe_version} is older than ${micpipe_min_version}. Upgrade with: cargo install micpipe --force"
+      warn "(${micpipe_version} has a launchd plist bug and does not follow default-input changes.)"
+      errors=$((errors + 1))
+    else
+      pass "micpipe ${micpipe_version} (>= ${micpipe_min_version})"
+    fi
+  fi
+
+  if micpipe status 2>/dev/null | grep -qi "running"; then
+    pass "micpipe service is running"
+  else
+    warn "micpipe service is not running"
+    read -rp "Run 'micpipe install' to start it now? [Y/n] " answer
+    if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
+      micpipe install
+      if micpipe status 2>/dev/null | grep -qi "running"; then
+        pass "micpipe service is running"
       else
-        printf "  ${RED}Invalid choice. Enter a number between 1 and %d.${RESET}\n" "${#mics[@]}"
+        fail "micpipe service still not running. If BlackHole was just installed, try: micpipe restart"
+        warn "Logs: ~/.local/share/micpipe/out.log and ~/.local/share/micpipe/err.log"
+        errors=$((errors + 1))
+      fi
+    else
+      fail "micpipe service not running; start it with: micpipe install"
+      errors=$((errors + 1))
+    fi
+  fi
+
+  if grep -qi "$aggregate_device_name" <<<"$audio_data"; then
+    warn "The \"$aggregate_device_name\" aggregate device from an earlier setup still exists."
+    warn "If Tuple still uses it as input while micpipe runs, your mic is sent twice"
+    warn "(direct + BlackHole copy) and remote participants hear an echo. Delete it in"
+    warn "Audio MIDI Setup and set Tuple's input to \"$blackhole_device\" instead."
+  fi
+
+  tuple_input_device="$blackhole_device"
+elif grep -qi "$aggregate_device_name" <<<"$audio_data"; then
+  pass "\"$aggregate_device_name\" aggregate device exists (manual alternative to micpipe)"
+
+  # Verify the channel layout. A mono mic (1ch) + BlackHole 2ch = 3 input
+  # channels, putting the joke on channel 2 - inside the pair Tuple sends. A
+  # stereo mic yields 4+ channels and the joke never reaches the room.
+  agg_channels="$(
+    printf '%s\n' "$audio_data" | awk -v target="        ${aggregate_device_name}:" '
+      $0 == target { in_device = 1; next }
+      in_device && /^          Input Channels:/ { print $NF; exit }
+      in_device && /^        [^ ]/ { in_device = 0 }
+    '
+  )"
+  if [[ "$agg_channels" =~ ^[0-9]+$ ]] && [[ "$agg_channels" -ne 3 ]]; then
+    warn "\"$aggregate_device_name\" has $agg_channels input channels; a working setup has 3 (a mono"
+    warn "mic + BlackHole 2ch). Your mic is likely stereo, so the joke lands on channels"
+    warn "Tuple doesn't transmit. Rebuild the aggregate with a mono mic (e.g. the built-in"
+    warn "MacBook microphone) - see the README appendix."
+  elif [[ "$agg_channels" == "3" ]]; then
+    pass "Channel layout looks right (mono mic + BlackHole) - the room will hear jokes"
+  fi
+
+  tuple_input_device="$aggregate_device_name"
+else
+  fail "No audio route found: micpipe is not installed and no \"$aggregate_device_name\" aggregate device exists."
+  if command -v cargo &>/dev/null; then
+    warn "Recommended: cargo install micpipe   (then re-run this script)"
+  else
+    warn "Recommended: install Rust via https://rustup.rs, then: cargo install micpipe"
+  fi
+  warn "No Rust toolchain? Create the aggregate device by hand instead - see the"
+  warn "README appendix \"Alternative: aggregate device\"."
+  errors=$((errors + 1))
+fi
+
+if [[ "$errors" -gt 0 ]]; then
+  printf "\n${RED}Fix the issues above and re-run this script.${RESET}\n"
+  exit 1
+fi
+
+# ── TTS backend ────────────────────────────────────────────────────────
+
+step "Checking TTS backend (${tts_backend})..."
+
+case "$tts_backend" in
+  elevenlabs|api|http)
+    for cmd in afplay ffmpeg; do
+      if command -v "$cmd" &>/dev/null; then
+        pass "$cmd found ($(command -v "$cmd"))"
+      else
+        fail "$cmd not found; the ${tts_backend} backend needs it. Install with: brew install ffmpeg"
+        errors=$((errors + 1))
       fi
     done
-    pass "Using microphone: \"$mic_choice\""
-    if [[ "$mic_choice_channels" != "1" ]]; then
-      warn "\"$mic_choice\" is ${mic_choice_channels}-channel, not mono. The joke audio will land"
-      warn "on channels Tuple does not transmit, so the room won't hear it. A mono mic (e.g."
-      warn "the built-in MacBook microphone) is recommended. Continuing, but expect silence."
-    fi
-  fi
+    ;;
+  *)
+    pass "Backend 'say' needs no extra tools (ffmpeg is only needed for API TTS backends)"
+    ;;
+esac
 
-  read -rp "Press Enter to open Audio MIDI Setup (instructions will follow)..."
-  open -a "Audio MIDI Setup"
-
-  printf "\n${BOLD}Follow these steps in Audio MIDI Setup:${RESET}\n"
-  printf "\n"
-  printf "  1. Click the ${BOLD}+${RESET} button (bottom-left) → ${BOLD}Create Aggregate Device${RESET}\n"
-  printf "  2. Rename it to ${BOLD}\"$DEVICE_NAME\"${RESET}\n"
-  printf "  3. Check ${BOLD}\"%s\" FIRST${RESET} (must be a ${BOLD}mono${RESET} mic)\n" "${mic_choice:-the built-in MacBook microphone}"
-  printf "  4. Check ${BOLD}\"BlackHole 2ch\" SECOND${RESET}\n"
-  printf "  5. Enable ${BOLD}Drift Correction${RESET} on the BlackHole 2ch row\n"
-  printf "  6. Set ${BOLD}Clock Source${RESET} to ${BOLD}\"%s\"${RESET}\n" "${mic_choice:-your built-in microphone}"
-  printf "\n"
-  printf "  ${YELLOW}Order matters!${RESET} The mic must be added first and used as the\n"
-  printf "  clock source. BlackHole needs drift correction enabled because\n"
-  printf "  it runs on a virtual clock that can drift from the hardware mic.\n"
-  printf "\n"
-
-  read -rp "Press Enter once you've created the device..."
-
-  # The device list changed (user just created one), so re-query.
-  audio_data="$(system_profiler SPAudioDataType 2>/dev/null)"
-  if grep -qi "$DEVICE_NAME" <<<"$audio_data"; then
-    pass "\"$DEVICE_NAME\" created successfully"
-
-    # Verify the channel layout. A mono mic (1ch) + BlackHole 2ch = 3 input
-    # channels, putting the joke on channel 2 - inside the pair Tuple sends. A
-    # stereo mic yields 4+ channels and the joke never reaches the room.
-    agg_channels="$(
-      printf '%s\n' "$audio_data" | awk -v target="        ${DEVICE_NAME}:" '
-        $0 == target { in_device = 1; next }
-        in_device && /^          Input Channels:/ { print $NF; exit }
-        in_device && /^        [^ ]/ { in_device = 0 }
-      '
-    )"
-    if [[ "$agg_channels" =~ ^[0-9]+$ ]] && [[ "$agg_channels" -ne 3 ]]; then
-      warn "\"$DEVICE_NAME\" has $agg_channels input channels; a working setup has 3 (a mono"
-      warn "mic + BlackHole 2ch). Your mic is likely stereo, so the joke lands on channels"
-      warn "Tuple doesn't transmit. Rebuild the aggregate with a mono mic (e.g. the built-in"
-      warn "MacBook microphone) - see the README's \"Use a mono microphone\" note."
-    elif [[ "$agg_channels" == "3" ]]; then
-      pass "Channel layout looks right (mono mic + BlackHole) - the room will hear jokes"
-    fi
-  else
-    fail "The device \"$DEVICE_NAME\" was not found."
-    warn "Make sure you: (1) created it in Audio MIDI Setup, (2) named it exactly"
-    warn "\"$DEVICE_NAME\", (3) clicked Done and closed the dialog."
-    errors=$((errors + 1))
-  fi
+if [[ -f "$config_env_file" ]]; then
+  config_mode="$(stat -f '%Lp' "$config_env_file" 2>/dev/null || printf '')"
+  case "$config_mode" in
+    600|400)
+      pass "config.env permissions are private ($config_mode)"
+      ;;
+    *)
+      warn "config.env is group/world readable (mode ${config_mode:-unknown}). Recommended:"
+      warn "  chmod 600 \"$config_env_file\""
+      ;;
+  esac
 fi
 
 # ── Tuple audio input ──────────────────────────────────────────────────
 
 step "Tuple configuration..."
 
-printf "\n  Set Tuple's audio input to the aggregate device:\n"
-printf "  ${BOLD}Tuple → Preferences → Audio → Input Device → \"$DEVICE_NAME\"${RESET}\n\n"
+printf "\n  Set Tuple's audio input device:\n"
+printf "  ${BOLD}Tuple → Preferences → Audio → Input Device → \"$tuple_input_device\"${RESET}\n\n"
 read -rp "Press Enter once configured (or if already done)..."
 
 # ── API test ───────────────────────────────────────────────────────────
@@ -218,6 +245,46 @@ if [[ -n "$joke" ]]; then
 else
   fail "Could not fetch a joke. Check your internet connection"
   errors=$((errors + 1))
+fi
+
+# ── Spoken test ────────────────────────────────────────────────────────
+# Exercises the real worker path end-to-end (fetch + configured TTS backend)
+# against a throwaway state dir, leaving the trigger's own state untouched.
+
+step "Testing text-to-speech..."
+
+if [[ -f "${script_dir}/.disabled" ]]; then
+  warn "Trigger is disabled (.disabled exists); skipping the spoken test."
+elif [[ "$errors" -gt 0 ]]; then
+  warn "Skipping the spoken test until the issues above are fixed."
+else
+  read -rp "Speak a test joke through the '${tts_backend}' backend now? [Y/n] " answer
+  if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
+    test_state_dir="$(mktemp -d "${TMPDIR:-/tmp}/dad-joke-setup.XXXXXX")"
+    printf '%s' "Setup Test" >"${test_state_dir}/my-room"
+    {
+      printf '%s\n' "setup-test-token"
+      printf '%s\n' "Setup Test"
+      printf '%s\n' "the setup script"
+      printf '%s\n' "setup-test"
+      printf '%s\n' "$(date +%s)"
+    } >"${test_state_dir}/pending-joke"
+    if DAD_JOKE_GREETER_STATE_DIR="$test_state_dir" \
+      DAD_JOKE_DEBOUNCE_SECONDS=0 \
+      "${script_dir}/run-trigger.sh" worker --room "Setup Test" --token "setup-test-token"; then
+      pass "Spoke a test joke through the '${tts_backend}' backend"
+    else
+      fail "Spoken test failed"
+      if [[ -s "${test_state_dir}/say-errors.log" ]]; then
+        sed 's/^/    /' "${test_state_dir}/say-errors.log"
+      fi
+      errors=$((errors + 1))
+    fi
+    rm -rf "$test_state_dir"
+    printf "  ${BOLD}Note:${RESET} you heard the local leg. The BlackHole leg is only audible to an app\n"
+    printf "  reading \"%s\" as input (Tuple in a call, or QuickTime recording it -\n" "$blackhole_device"
+    printf "  see the README's \"Verify before a call\" section).\n"
+  fi
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────
