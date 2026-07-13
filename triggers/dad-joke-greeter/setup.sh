@@ -165,6 +165,9 @@ elif grep -qi "$aggregate_device_name" <<<"$audio_data"; then
     warn "MacBook microphone) - see the README appendix."
   elif [[ "$agg_channels" == "3" ]]; then
     pass "Channel layout looks right (mono mic + BlackHole) - the room will hear jokes"
+  else
+    warn "Could not determine \"$aggregate_device_name\" channel layout; verify manually that it"
+    warn "shows 3 input channels (mono mic + BlackHole 2ch) in Audio MIDI Setup."
   fi
 
   tuple_input_device="$aggregate_device_name"

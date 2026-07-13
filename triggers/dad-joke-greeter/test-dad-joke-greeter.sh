@@ -392,6 +392,22 @@ EOF
   pass "config.env values override empty environment variables"
 }
 
+test_non_self_join_with_matching_room_schedules_joke() {
+  make_context
+  printf '%s' "Example Room" >"${STATE_DIR}/my-room"
+
+  TUPLE_TRIGGER_IS_SELF=false \
+  TUPLE_TRIGGER_ROOM_NAME="Example Room" \
+  TUPLE_TRIGGER_FULL_NAME="Guest User" \
+  run_event room-joined
+
+  wait_until "[ -f '$SAY_LOG' ] && grep -Fq 'Guest User just joined. Here is a dad joke. knock knock' '$SAY_LOG'" \
+    || fail "non-self join in matching room did not speak"
+  wait_until "[ ! -f '${STATE_DIR}/pending-joke' ]" \
+    || fail "pending joke was not cleared after speaking"
+  pass "non-self join in matching tracked room schedules and speaks joke"
+}
+
 test_self_join_schedules_and_speaks
 test_non_self_join_without_self_room_skips
 test_worker_supersede_and_happy_path
@@ -405,3 +421,4 @@ test_api_backend_failure_falls_back_to_say
 test_comment_only_tracked_rooms_tracks_all
 test_missing_api_key_falls_back_to_say
 test_config_env_overrides_environment
+test_non_self_join_with_matching_room_schedules_joke
