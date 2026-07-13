@@ -88,7 +88,7 @@ The key trick is routing the joke audio into Tuple's microphone input so remote 
 micpipe streams your mic into BlackHole only while some app is reading BlackHole as an input (Tuple during a call, or a recording app). The trigger writes joke audio to BlackHole regardless, but nothing is audible from BlackHole until something listens. To check the full path end-to-end without a call:
 
 1. Open QuickTime Player → File → New Audio Recording, click the arrow next to the record button, and select **BlackHole 2ch** as the microphone.
-2. Start recording, speak a few words, and run the setup script's spoken test (`bash setup.sh`, answer `Y` at the test prompt).
+2. Start recording, speak a few words, and run the setup script's spoken test (`bash ~/.tuple/triggers/dad-joke-greeter/setup.sh`, answer `Y` at the test prompt).
 3. Stop and play the recording: it should contain **both** your voice (via micpipe) and the joke (via the trigger).
 
 ### Speaker output
@@ -214,6 +214,8 @@ Earlier versions of this trigger kept configuration under `~/.tuple/` and routed
    **Semantics change:** an empty or comment-only `tracked-rooms.txt` now means *no filter* — jokes in ALL rooms. In 1.x an empty file matched nothing (an effective mute). If you emptied the file to mute jokes, use `touch .disabled` instead. Lines starting with `#` are now comments, and surrounding whitespace is trimmed.
 3. Disable flag: if you had `~/.tuple/.dad-jokes-disabled`, replace it: `rm ~/.tuple/.dad-jokes-disabled && touch ~/.tuple/triggers/dad-joke-greeter/.disabled`
 4. Old state: `rm -rf ~/.tuple/.state/dad-joke-greeter` — state now lives in `.state/` inside this folder (`DAD_JOKE_GREETER_STATE_DIR` overrides).
+
+> **Behavior change:** this version also speaks a joke when **you** join a tracked room (1.x stayed silent until someone else joined). If that's more jokes than you want, limit rooms with `tracked-rooms.txt` or pause with `.disabled`.
 
 ## Known limitations
 
